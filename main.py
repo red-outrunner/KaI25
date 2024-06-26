@@ -1,18 +1,17 @@
 # by weo fuzile
 # ubomvu
 import tkinter as tk
-from tkinter import ttk
-from tkinter import messagebox
+from tkinter import ttk, messagebox, simpledialog
 from datetime import datetime, timedelta
 
 class CalendarApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("ubomvu calendar")
+        self.root.title("Ubomvu Calendar Application")
         self.root.geometry("600x600")
 
         self.selected_date = datetime.now().date()
-        self.events = {}
+        self.events = {}  # Dictionary to store events
 
         self.create_widgets()
         self.draw_calendar()
@@ -42,20 +41,21 @@ class CalendarApp:
         self.calendar_view.heading('7', text='Sun')
 
         self.calendar_view.bind("<Button-1>", self.date_click)
+        self.calendar_view.bind("<Button-3>", self.show_toolbox)
 
     def draw_calendar(self):
         month = self.selected_date.month
         year = self.selected_date.year
         self.lbl_month_year.config(text=f'{datetime.strftime(self.selected_date, "%B %Y")}')
-        
+
         # Clear previous items in the calendar
         for item in self.calendar_view.get_children():
             self.calendar_view.delete(item)
-        
+
         # Calculate the starting day of the month
         first_day = datetime(year, month, 1)
         start_day = first_day.weekday()  # 0 = Monday, 6 = Sunday
-        
+
         # Calculate number of days in the month
         days_in_month = (first_day + timedelta(days=32)).replace(day=1) - timedelta(days=1)
         total_days = days_in_month.day
@@ -64,24 +64,16 @@ class CalendarApp:
         row = []
         for i in range(start_day):
             row.append('')
-        
+
         for day in range(1, total_days + 1):
-            row.append(day)
+            events_on_day = self.events.get(datetime(year, month, day), [])
+            row.append((day, events_on_day))
             if len(row) == 7:
                 self.calendar_view.insert('', 'end', values=row)
                 row = []
-        
+
         if row:
             self.calendar_view.insert('', 'end', values=row)
-
-        # Highlight today's date
-        today = datetime.now().date()
-        if self.selected_date.month == today.month and self.selected_date.year == today.year:
-            for child in self.calendar_view.get_children():
-                for i, val in enumerate(self.calendar_view.item(child)['values']):
-                    if val == today.day:
-                        self.calendar_view.item(child, tags=('today',))
-                        break
 
     def prev_month(self):
         self.selected_date = self.selected_date - timedelta(days=1)
@@ -96,10 +88,47 @@ class CalendarApp:
         day = self.calendar_view.item(item, 'values')[0]
 
         if day != '':
-            self.selected_date = datetime(self.selected_date.year, self.selected_date.month, int(day))
+            selected_date = datetime(self.selected_date.year, self.selected_date.month, int(day))
+            self.add_event(selected_date)
+
+    def add_event(self, date):
+        event_description = simpledialog.askstring("Event Description", "Enter event description:")
+        if event_description:
+            repeat_choice = messagebox.askyesno("Repeat Event", "Do you want to repeat this event?")
+            if repeat_choice:
+                repeat_options = ['None', 'Daily', 'Monthly', 'Yearly']
+                repeat_interval = simpledialog.askstring("Repeat Interval", "Enter repeat interval (daily, monthly or yearly):")
+                if repeat_interval in repeat_options:
+                    self.events.setdefault(date, []).append((event_description, repeat_interval))
+                else:
+                    messagebox.showwarning("Invalid Input", "Please enter a valid repeat interval.")
+            else:
+                self.events.setdefault(date, []).append((event_description, 'None'))
             self.draw_calendar()
-            # point nuevo
-            messagebox.showinfo("Selected Date", f"You clicked on {self.selected_date}")
+
+    def show_toolbox(self, event):
+        item = self.calendar_view.selection()[0]
+        day = self.calendar_view.item(item, 'values')[0]
+
+        if day != '':
+            selected_date = datetime(self.selected_date.year, self.selected_date.month, int(day))
+            self.show_event_toolbox(selected_date)
+
+    def show_event_toolbox(self, date):
+        menu = tk.Menu(self.root, tearoff=0)
+        menu.add_command(label="Add Event", command=lambda: self.add_event(date))
+        menu.add_command(label="Edit Events", command=lambda: self.edit_events(date))
+        menu.add_command(label="Delete Events", command=lambda: self.delete_events(date))
+
+        menu.post(self.root.winfo_pointerx(), self.root.winfo_pointery())
+
+    def edit_events(self, date):
+        # Implement editing events for a specific date
+        pass
+
+    def delete_events(self, date):
+        # Implement deleting events for a specific date
+        pass
 
     def run(self):
         self.root.mainloop()
