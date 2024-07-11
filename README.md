@@ -1,4 +1,4 @@
-# Simple Tkinter Project
+# KaI25 - [ubomvu calendar] 
 
 This is a calendar project I call Ubomvu calendar made using the `tkinter` library. 
 
