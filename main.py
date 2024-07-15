@@ -2,6 +2,8 @@ import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
 from datetime import datetime, timedelta
 import re
+from mariadb import mariadb
+
 
 # Define the Event class
 class Event:
@@ -18,16 +20,23 @@ class CalendarApp:
         self.root.geometry("1000x800")  # Adjust width for sidebar
 
         self.selected_date = datetime.now().date()
-        self.events = {}  # Dictionary to store events
+        self.events = self.load_events_from_db()  # Load events from database
+
+        self.frame = ttk.Frame(self.root)
+        self.frame.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
+
+        self.canvas = tk.Canvas(self.root, width=self.root.winfo_width(), height=self.root.winfo_height())
+        self.canvas.pack()
+
+        # Create the gradient
+        self.canvas.create_rectangle(0, 0, self.root.winfo_width(), self.root.winfo_height(), fill="#800080", outline="#800080")  # Purple
+        self.canvas.create_rectangle(0, 0, self.root.winfo_width(), self.root.winfo_height(), fill="#008000", outline="#008000", stipple="gray50")  # Green with stipple for gradient effect
 
         self.create_widgets()
         self.draw_calendar()
         self.update_sidebar()
 
     def create_widgets(self):
-        self.frame = ttk.Frame(self.root)
-        self.frame.pack(pady=20)
-
         # Calendar Section
         self.calendar_frame = ttk.Frame(self.frame)
         self.calendar_frame.grid(row=0, column=0, rowspan=2, padx=(0, 20))
@@ -64,7 +73,6 @@ class CalendarApp:
 
         self.sidebar_events_list.bind("<<ListboxSelect>>", self.sidebar_event_selected)
 
-        # Create a popup window for the event toolbox
         self.event_toolbox_popup = tk.Toplevel(self.root)
         self.event_toolbox_popup.withdraw()  # Hide it initially
         self.event_toolbox_popup.title("Event Toolbox")
@@ -113,7 +121,7 @@ class CalendarApp:
                 relief="solid",
             )
             button.grid(row=row + 1, column=col)
-            button.bind("<Button-3>", lambda event, b=button, d=date: self.show_event_toolbox_popup(d, b))  # Pass button
+            button.bind("<Button-3>", lambda event, b=button, d=date: self.show_event_toolbox_popup(d, b))
             self.calendar_buttons.append(button)
 
             col += 1
@@ -132,7 +140,7 @@ class CalendarApp:
         self.update_sidebar()
 
     def show_events_for_date(self, date):
-        self.selected_date = date  # Update selected date
+        self.selected_date = date 
         self.update_sidebar()
 
         events_on_day = self.events.get(date, [])
@@ -146,15 +154,22 @@ class CalendarApp:
         if event.repeat_interval == "Daily":
             next_date = date + timedelta(days=1)
         elif event.repeat_interval == "Monthly":
-            next_date = date.replace(month=date.month + 1, day=min(date.day, (date + timedelta(days=32)).replace(day=1).day - 1)) # Handle month rollover
+            # Handle month rollover correctly
+            next_month = date.month + 1
+            next_year = date.year
+            if next_month > 12:
+                next_month = 1
+                next_year += 1
+            next_date = date.replace(month=next_month, year=next_year, day=min(date.day, (date + timedelta(days=32)).replace(day=1).day - 1))
         elif event.repeat_interval == "Yearly":
             next_date = date.replace(year=date.year + 1)
         else:
             return  # No repetition needed
-        
-        if next_date <= self.selected_date.replace(day=1) + timedelta(days=31): # Check if still in current month
+
+        if next_date <= self.selected_date.replace(day=1) + timedelta(days=31):  # Check if still in current month
             self.events.setdefault(next_date, []).append(event)
             self.repeat_event(event, next_date)
+            self.save_event_to_db(next_date, event)
 
     def add_event(self, date):
         event_description = simpledialog.askstring("Event Description", "Enter event description:")
@@ -166,10 +181,11 @@ class CalendarApp:
             self.repeat_event(new_event, date)  # Handle repetition
             self.draw_calendar()
             self.update_sidebar()
+            self.save_event_to_db(date, new_event)
 
     def show_event_toolbox_popup(self, date, button):
         self.selected_date = date  # Update selected date
-        self.event_toolbox_popup.deiconify()  # Show the popup
+        self.event_toolbox_popup.deiconify()  # the popup
         self.event_toolbox_popup.geometry(f"+{self.root.winfo_rootx() + self.calendar_frame.winfo_x() + button.winfo_x()}+{self.root.winfo_rooty() + self.calendar_frame.winfo_y() + button.winfo_y()}")  # Position it near the button
 
     def edit_events(self, date):
@@ -183,6 +199,7 @@ class CalendarApp:
                     event_list[i] = (new_description, repeat_interval)
             self.draw_calendar()
             self.update_sidebar()
+            self.save_events_to_db(date, event_list)
         else:
             messagebox.showinfo("No Events", "There are no events on this date.")
 
@@ -199,12 +216,14 @@ class CalendarApp:
                             break
                     self.draw_calendar()
                     self.update_sidebar()
+                    self.save_events_to_db(date, event_list)
             else:
                 delete_choice = messagebox.askyesno("Delete Event", "Are you sure you want to delete all events on this date?")
                 if delete_choice:
                     del self.events[date]
                     self.draw_calendar()
                     self.update_sidebar()
+                    self.delete_events_from_db(date)
         else:
             messagebox.showinfo("No Events", "There are no events on this date.")
 
@@ -218,7 +237,6 @@ class CalendarApp:
                 for event in events:
                     upcoming_events.append(f"{date.strftime('%Y-%m-%d')} - {event.description}")
 
-        # Add upcoming events to the sidebar listbox
         for event in upcoming_events:
             self.sidebar_events_list.insert(tk.END, event)
 
@@ -229,6 +247,89 @@ class CalendarApp:
             date_str, description = selected_event.split(" - ")
             selected_date = datetime.strptime(date_str, "%Y-%m-%d").date()
             self.show_events_for_date(selected_date)
+
+    def save_event_to_db(self, date, event):
+        try:
+            conn = mariadb.connect(
+                user="your_username",
+                password="your_password",
+                host="your_host",
+                database="your_database",
+            )
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO events (event_date, description, repeat_interval) VALUES (?, ?, ?)",
+                (date.strftime("%Y-%m-%d"), event.description, event.repeat_interval),
+            )
+            conn.commit()
+            cursor.close()
+            conn.close()
+        except mariadb.Error as e:
+            print(f"Error connecting to MariaDB: {e}")
+
+    def save_events_to_db(self, date, event_list):
+        try:
+            conn = mariadb.connect(
+                user="your_username",
+                password="your_password",
+                host="your_host",
+                database="your_database",
+            )
+            cursor = conn.cursor()
+            cursor.execute(
+                "DELETE FROM events WHERE event_date = ?",
+                (date.strftime("%Y-%m-%d"),)
+            )
+            for event in event_list:
+                cursor.execute(
+                    "INSERT INTO events (event_date, description, repeat_interval) VALUES (?, ?, ?)",
+                    (date.strftime("%Y-%m-%d"), event.description, event.repeat_interval),
+                )
+            conn.commit()
+            cursor.close()
+            conn.close()
+        except mariadb.Error as e:
+            print(f"Error connecting to MariaDB: {e}")
+
+    def delete_events_from_db(self, date):
+        try:
+            conn = mariadb.connect(
+                user="your_username",
+                password="your_password",
+                host="your_host",
+                database="your_database",
+            )
+            cursor = conn.cursor()
+            cursor.execute(
+                "DELETE FROM events WHERE event_date = ?",
+                (date.strftime("%Y-%m-%d"),)
+            )
+            conn.commit()
+            cursor.close()
+            conn.close()
+        except mariadb.Error as e:
+            print(f"Error connecting to MariaDB: {e}")
+
+    def load_events_from_db(self):
+        events = {}
+        try:
+            conn = mariadb.connect(
+                user="your_username",
+                password="your_password",
+                host="your_host",
+                database="your_database",
+            )
+            cursor = conn.cursor()
+            cursor.execute("SELECT event_date, description, repeat_interval FROM events")
+            for row in cursor:
+                event_date = datetime.strptime(row[0], "%Y-%m-%d").date()
+                event = Event(row[1], row[2])
+                events.setdefault(event_date, []).append(event)
+            cursor.close()
+            conn.close()
+        except mariadb.Error as e:
+            print(f"Error connecting to MariaDB: {e}")
+        return events
 
     def run(self):
         self.root.mainloop()
