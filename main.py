@@ -11,108 +11,137 @@ class Event:
         self.repeat_count = 0
 
 # Define the CalendarApp class  
-
 class CalendarApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Ubomvu Calendar Application")
-        self.root.geometry("600x600")
+        self.root.title("Ubomvu Calendar")
+        self.root.geometry("1000x800")  # Adjust width for sidebar
 
         self.selected_date = datetime.now().date()
         self.events = {}  # Dictionary to store events
-        
 
         self.create_widgets()
         self.draw_calendar()
+        self.update_sidebar()
 
     def create_widgets(self):
         self.frame = ttk.Frame(self.root)
         self.frame.pack(pady=20)
 
-        self.lbl_month_year = ttk.Label(self.frame, text='', font=('Helvetica', 14))
-        self.lbl_month_year.grid(row=0, column=1, columnspan=5)
+        # Calendar Section
+        self.calendar_frame = ttk.Frame(self.frame)
+        self.calendar_frame.grid(row=0, column=0, rowspan=2, padx=(0, 20))
 
-        self.prev_month_btn = ttk.Button(self.frame, text='<< Prev', command=self.prev_month)
+        self.lbl_month_year = ttk.Label(self.calendar_frame, text='', font=('Helvetica', 14))
+        self.lbl_month_year.grid(row=0, column=0, columnspan=7)
+
+        self.prev_month_btn = ttk.Button(self.calendar_frame, text='<< Prev', command=self.prev_month)
         self.prev_month_btn.grid(row=0, column=0)
 
-        self.next_month_btn = ttk.Button(self.frame, text='Next >>', command=self.next_month)
+        self.next_month_btn = ttk.Button(self.calendar_frame, text='Next >>', command=self.next_month)
         self.next_month_btn.grid(row=0, column=6)
 
-        self.calendar_view = ttk.Treeview(self.frame, height=7, columns=['1', '2', '3', '4', '5', '6', '7'], show='headings')
-        self.calendar_view.grid(row=1, column=0, columnspan=7)
+        # Create labels for the days of the week
+        self.day_labels = [
+            ttk.Label(self.calendar_frame, text=day, width=4, relief="solid")
+            for day in ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        ]
+        for i, label in enumerate(self.day_labels):
+            label.grid(row=1, column=i)
 
-        self.calendar_view.heading('1', text='Mon')
-        self.calendar_view.heading('2', text='Tue')
-        self.calendar_view.heading('3', text='Wed')
-        self.calendar_view.heading('4', text='Thu')
-        self.calendar_view.heading('5', text='Fri')
-        self.calendar_view.heading('6', text='Sat')
-        self.calendar_view.heading('7', text='Sun')
+        # Create a list to store the calendar buttons
+        self.calendar_buttons = []
 
-        self.calendar_view.bind("<Button-1>", self.date_click)
-        self.calendar_view.bind("<Double-1>", self.show_event_toolbox)
-        self.calendar_view.bind("<Button-3>", self.show_event_toolbox)
+        # Sidebar Section
+        self.sidebar_frame = ttk.Frame(self.frame)
+        self.sidebar_frame.grid(row=0, column=1, rowspan=2, sticky="ns")
+
+        self.sidebar_label = ttk.Label(self.sidebar_frame, text="Upcoming Events", font=('Helvetica', 12))
+        self.sidebar_label.pack(pady=10)
+
+        self.sidebar_events_list = tk.Listbox(self.sidebar_frame, width=30, height=10)
+        self.sidebar_events_list.pack(pady=5)
+
+        self.sidebar_events_list.bind("<<ListboxSelect>>", self.sidebar_event_selected)
+
+        # Create a popup window for the event toolbox
+        self.event_toolbox_popup = tk.Toplevel(self.root)
+        self.event_toolbox_popup.withdraw()  # Hide it initially
+        self.event_toolbox_popup.title("Event Toolbox")
+
+        # Add Event Button
+        self.add_event_btn = ttk.Button(self.event_toolbox_popup, text="Add Event", command=lambda: self.add_event(self.selected_date))
+        self.add_event_btn.pack(pady=5)
+
+        # Edit Events Button
+        self.edit_event_btn = ttk.Button(self.event_toolbox_popup, text="Edit Events", command=lambda: self.edit_events(self.selected_date))
+        self.edit_event_btn.pack(pady=5)
+
+        # Delete Events Button
+        self.delete_event_btn = ttk.Button(self.event_toolbox_popup, text="Delete Events", command=lambda: self.delete_events(self.selected_date))
+        self.delete_event_btn.pack(pady=5)
 
     def draw_calendar(self):
         month = self.selected_date.month
         year = self.selected_date.year
         self.lbl_month_year.config(text=f'{datetime.strftime(self.selected_date, "%B %Y")}')
 
-        for item in self.calendar_view.get_children():
-            self.calendar_view.delete(item)
+        # Clear existing buttons
+        for button in self.calendar_buttons:
+            button.destroy()
+        self.calendar_buttons = []
 
         first_day = datetime(year, month, 1)
         start_day = first_day.weekday()
         days_in_month = (first_day + timedelta(days=32)).replace(day=1) - timedelta(days=1)
         total_days = days_in_month.day
 
-        row = []
-        for i in range(start_day):
-            row.append('')
+        row = 0
+        col = start_day
 
         for day in range(1, total_days + 1):
             date = datetime(year, month, day)
             events_on_day = self.events.get(date, [])
             event_text = "\n".join(event.description for event in events_on_day)
-            row.append((day, event_text)) 
-            if len(row) == 7:
-                self.calendar_view.insert('', 'end', values=row)
-                row = []
-        if row:
-            self.calendar_view.insert('', 'end', values=row)
+
+            # Create a button for each day
+            button = tk.Button(
+                self.calendar_frame,
+                text=str(day),
+                command=lambda d=date: self.show_events_for_date(d),
+                width=4,
+                relief="solid",
+            )
+            button.grid(row=row + 1, column=col)
+            button.bind("<Button-3>", lambda event, b=button, d=date: self.show_event_toolbox_popup(d, b))  # Pass button
+            self.calendar_buttons.append(button)
+
+            col += 1
+            if col > 6:
+                col = 0
+                row += 1
+
     def prev_month(self):
         self.selected_date = self.selected_date - timedelta(days=1)
         self.draw_calendar()
+        self.update_sidebar()
 
     def next_month(self):
         self.selected_date = (self.selected_date + timedelta(days=32)).replace(day=1)
         self.draw_calendar()
+        self.update_sidebar()
 
-    def date_click(self, event):
-        # click and highlight the selected date
-        for item in self.calendar_view.selection():
-            self.calendar_view.selection_remove(item)
-        item = self.calendar_view.identify_row(event.y)
-        self.calendar_view.selection_add(item)
+    def show_events_for_date(self, date):
+        self.selected_date = date  # Update selected date
+        self.update_sidebar()
 
-        # Get the selected date then open a widget to add_event
-        self.select_date(event)
+        events_on_day = self.events.get(date, [])
+        if events_on_day:
+            event_text = "\n".join(event.description for event in events_on_day)
+            messagebox.showinfo(f"Events on {date.strftime('%Y-%m-%d')}", event_text)
+        else:
+            messagebox.showinfo(f"Events on {date.strftime('%Y-%m-%d')}", "No events scheduled for this day.")
 
-    def select_date(self, event):
-        item = self.calendar_view.selection()[0]
-        day, events = self.calendar_view.item(item, 'values')[:2]  # Get day and events
-
-        if day != '':
-            # Clean the day variable
-            day = day.strip()  # Remove leading/trailing whitespace
-            day = re.sub(r'\D', '', day)  # Remove non-numeric characters
-
-            try:
-                selected_date = datetime(self.selected_date.year, self.selected_date.month, int(day))
-                self.add_event(selected_date)
-            except ValueError:
-                messagebox.showerror("Invalid Date", "Please select a valid date.")
-    
     def repeat_event(self, event, date):
         if event.repeat_interval == "Daily":
             next_date = date + timedelta(days=1)
@@ -136,31 +165,12 @@ class CalendarApp:
             self.events.setdefault(date, []).append(new_event)
             self.repeat_event(new_event, date)  # Handle repetition
             self.draw_calendar()
+            self.update_sidebar()
 
-    def show_event_toolbox(self, event):
-        item = self.calendar_view.selection()[0]
-        day, events = self.calendar_view.item(item, 'values')[:2]  # Get day and events
-        
-        if day != '':
-            selected_date = datetime(self.selected_date.year, self.selected_date.month, int(day))
-            self.show_event_toolbox_widget(selected_date)
-
-    def show_event_toolbox_widget(self, date):
-        # Create a new top-level window for the toolbox
-        toolbox_window = tk.Toplevel(self.root)
-        toolbox_window.title("Event Toolbox")
-
-        # Add Event Button
-        add_event_btn = ttk.Button(toolbox_window, text="Add Event", command=lambda: self.add_event(date))
-        add_event_btn.pack(pady=5)
-
-        # Edit Events Button
-        edit_event_btn = ttk.Button(toolbox_window, text="Edit Events", command=lambda: self.edit_events(date))
-        edit_event_btn.pack(pady=5)
-
-        # Delete Events Button
-        delete_event_btn = ttk.Button(toolbox_window, text="Delete Events", command=lambda: self.delete_events(date))
-        delete_event_btn.pack(pady=5)
+    def show_event_toolbox_popup(self, date, button):
+        self.selected_date = date  # Update selected date
+        self.event_toolbox_popup.deiconify()  # Show the popup
+        self.event_toolbox_popup.geometry(f"+{self.root.winfo_rootx() + self.calendar_frame.winfo_x() + button.winfo_x()}+{self.root.winfo_rooty() + self.calendar_frame.winfo_y() + button.winfo_y()}")  # Position it near the button
 
     def edit_events(self, date):
         # Implement editing events for a specific date
@@ -172,6 +182,7 @@ class CalendarApp:
                 if new_description:
                     event_list[i] = (new_description, repeat_interval)
             self.draw_calendar()
+            self.update_sidebar()
         else:
             messagebox.showinfo("No Events", "There are no events on this date.")
 
@@ -187,13 +198,37 @@ class CalendarApp:
                             del event_list[i]
                             break
                     self.draw_calendar()
+                    self.update_sidebar()
             else:
                 delete_choice = messagebox.askyesno("Delete Event", "Are you sure you want to delete all events on this date?")
                 if delete_choice:
                     del self.events[date]
                     self.draw_calendar()
+                    self.update_sidebar()
         else:
             messagebox.showinfo("No Events", "There are no events on this date.")
+
+    def update_sidebar(self):
+        self.sidebar_events_list.delete(0, tk.END)  # Clear existing events
+
+        # Get upcoming events
+        upcoming_events = []
+        for date, events in sorted(self.events.items()):
+            if date >= self.selected_date:
+                for event in events:
+                    upcoming_events.append(f"{date.strftime('%Y-%m-%d')} - {event.description}")
+
+        # Add upcoming events to the sidebar listbox
+        for event in upcoming_events:
+            self.sidebar_events_list.insert(tk.END, event)
+
+    def sidebar_event_selected(self, event):
+        selection = self.sidebar_events_list.curselection()
+        if selection:
+            selected_event = self.sidebar_events_list.get(selection[0])
+            date_str, description = selected_event.split(" - ")
+            selected_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+            self.show_events_for_date(selected_date)
 
     def run(self):
         self.root.mainloop()
