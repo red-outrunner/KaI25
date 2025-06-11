@@ -1,340 +1,281 @@
-import tkinter as tk
-from tkinter import ttk, messagebox, simpledialog
-from datetime import datetime, timedelta
-import re
-from mariadb import mariadb
+import sys
+import os
+import sqlite3
+from datetime import datetime
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QLabel, QPushButton, QCalendarWidget, QListWidget, QInputDialog,
+    QMessageBox, QSplitter, QListWidgetItem
+)
+from PyQt6.QtGui import QFont, QColor, QBrush, QTextCharFormat
+from PyQt6.QtCore import Qt, QDate
 
-
-# Define the Event class
+# Define the Event class (remains the same)
 class Event:
     def __init__(self, description, repeat_interval="None"):
         self.description = description
         self.repeat_interval = repeat_interval
-        self.repeat_count = 0
 
-# Define the CalendarApp class  
-class CalendarApp:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("Ubomvu Calendar")
-        self.root.geometry("1000x800")  # Adjust width for sidebar
+class CalendarApp(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Ubomvu Calendar (PyQt6)")
+        self.setGeometry(100, 100, 1200, 800)
 
-        self.selected_date = datetime.now().date()
-        self.events = self.load_events_from_db()  # Load events from database
+        # --- Database Initialization ---
+        self.db_file = 'calendar.db'
+        self.init_db()
+        self.events = self.load_events_from_db()
 
-        self.frame = ttk.Frame(self.root)
-        self.frame.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
+        # --- Main UI Setup ---
+        self.central_widget = QWidget()
+        self.setCentralWidget(self.central_widget)
+        self.layout = QHBoxLayout(self.central_widget)
 
-        self.canvas = tk.Canvas(self.root, width=self.root.winfo_width(), height=self.root.winfo_height())
-        self.canvas.pack()
+        # Use a splitter to make calendar and sidebar resizable
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.layout.addWidget(self.splitter)
 
-        # Create the gradient
-        self.canvas.create_rectangle(0, 0, self.root.winfo_width(), self.root.winfo_height(), fill="#800080", outline="#800080")  # Purple
-        self.canvas.create_rectangle(0, 0, self.root.winfo_width(), self.root.winfo_height(), fill="#008000", outline="#008000", stipple="gray50")  # Green with stipple for gradient effect
+        self.create_calendar_section()
+        self.create_sidebar_section()
 
-        self.create_widgets()
-        self.draw_calendar()
+        # Initial population of UI
         self.update_sidebar()
+        self.highlight_dates_with_events()
 
-    def create_widgets(self):
-        # Calendar Section
-        self.calendar_frame = ttk.Frame(self.frame)
-        self.calendar_frame.grid(row=0, column=0, rowspan=2, padx=(0, 20))
+    def create_calendar_section(self):
+        """Creates the left-hand side of the UI with the calendar."""
+        calendar_container = QWidget()
+        calendar_layout = QVBoxLayout(calendar_container)
 
-        self.lbl_month_year = ttk.Label(self.calendar_frame, text='', font=('Helvetica', 14))
-        self.lbl_month_year.grid(row=0, column=0, columnspan=7)
+        # --- Calendar Widget ---
+        self.calendar = QCalendarWidget()
+        self.calendar.setGridVisible(True)
+        # Connect signals to slots (event handlers)
+        self.calendar.clicked[QDate].connect(self.date_clicked)
+        self.calendar.currentPageChanged.connect(self.month_changed)
 
-        self.prev_month_btn = ttk.Button(self.calendar_frame, text='<< Prev', command=self.prev_month)
-        self.prev_month_btn.grid(row=0, column=0)
+        calendar_layout.addWidget(self.calendar)
+        self.splitter.addWidget(calendar_container)
 
-        self.next_month_btn = ttk.Button(self.calendar_frame, text='Next >>', command=self.next_month)
-        self.next_month_btn.grid(row=0, column=6)
+    def create_sidebar_section(self):
+        """Creates the right-hand side of the UI with the event list."""
+        sidebar_container = QWidget()
+        sidebar_layout = QVBoxLayout(sidebar_container)
 
-        # Create labels for the days of the week
-        self.day_labels = [
-            ttk.Label(self.calendar_frame, text=day, width=4, relief="solid")
-            for day in ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-        ]
-        for i, label in enumerate(self.day_labels):
-            label.grid(row=1, column=i)
+        # --- Upcoming Events Label ---
+        sidebar_label = QLabel("Upcoming Events")
+        sidebar_label.setFont(QFont('Helvetica', 14, QFont.Weight.Bold))
+        sidebar_layout.addWidget(sidebar_label)
 
-        # Create a list to store the calendar buttons
-        self.calendar_buttons = []
+        # --- Events List Widget ---
+        self.event_list_widget = QListWidget()
+        self.event_list_widget.itemDoubleClicked.connect(self.edit_event_from_list)
+        sidebar_layout.addWidget(self.event_list_widget)
 
-        # Sidebar Section
-        self.sidebar_frame = ttk.Frame(self.frame)
-        self.sidebar_frame.grid(row=0, column=1, rowspan=2, sticky="ns")
+        # --- Action Buttons ---
+        button_layout = QHBoxLayout()
+        self.add_event_btn = QPushButton("Add Event")
+        self.add_event_btn.clicked.connect(self.add_event)
 
-        self.sidebar_label = ttk.Label(self.sidebar_frame, text="Upcoming Events", font=('Helvetica', 12))
-        self.sidebar_label.pack(pady=10)
+        self.delete_event_btn = QPushButton("Delete Event")
+        self.delete_event_btn.clicked.connect(self.delete_event)
 
-        self.sidebar_events_list = tk.Listbox(self.sidebar_frame, width=30, height=10)
-        self.sidebar_events_list.pack(pady=5)
+        button_layout.addWidget(self.add_event_btn)
+        button_layout.addWidget(self.delete_event_btn)
+        sidebar_layout.addLayout(button_layout)
 
-        self.sidebar_events_list.bind("<<ListboxSelect>>", self.sidebar_event_selected)
+        self.splitter.addWidget(sidebar_container)
 
-        self.event_toolbox_popup = tk.Toplevel(self.root)
-        self.event_toolbox_popup.withdraw()  # Hide it initially
-        self.event_toolbox_popup.title("Event Toolbox")
+    # --- Event Handlers (Slots) ---
 
-        # Add Event Button
-        self.add_event_btn = ttk.Button(self.event_toolbox_popup, text="Add Event", command=lambda: self.add_event(self.selected_date))
-        self.add_event_btn.pack(pady=5)
+    def date_clicked(self, qdate):
+        """Handles when a user clicks a date on the calendar."""
+        self.update_sidebar_for_date(qdate)
 
-        # Edit Events Button
-        self.edit_event_btn = ttk.Button(self.event_toolbox_popup, text="Edit Events", command=lambda: self.edit_events(self.selected_date))
-        self.edit_event_btn.pack(pady=5)
+    def month_changed(self):
+        """Handles when the user navigates to a new month."""
+        self.highlight_dates_with_events()
 
-        # Delete Events Button
-        self.delete_event_btn = ttk.Button(self.event_toolbox_popup, text="Delete Events", command=lambda: self.delete_events(self.selected_date))
-        self.delete_event_btn.pack(pady=5)
+    def add_event(self):
+        """Adds a new event for the currently selected date."""
+        selected_date = self.calendar.selectedDate()
+        date_str = selected_date.toString("yyyy-MM-dd")
 
-    def draw_calendar(self):
-        month = self.selected_date.month
-        year = self.selected_date.year
-        self.lbl_month_year.config(text=f'{datetime.strftime(self.selected_date, "%B %Y")}')
+        text, ok = QInputDialog.getText(self, 'Add Event', f'Enter event description for {date_str}:')
+        if ok and text:
+            py_date = selected_date.toPyDate()
+            event = Event(text)
+            if py_date not in self.events:
+                self.events[py_date] = []
+            self.events[py_date].append(event)
 
-        # Clear existing buttons
-        for button in self.calendar_buttons:
-            button.destroy()
-        self.calendar_buttons = []
-
-        first_day = datetime(year, month, 1)
-        start_day = first_day.weekday()
-        days_in_month = (first_day + timedelta(days=32)).replace(day=1) - timedelta(days=1)
-        total_days = days_in_month.day
-
-        row = 0
-        col = start_day
-
-        for day in range(1, total_days + 1):
-            date = datetime(year, month, day)
-            events_on_day = self.events.get(date, [])
-            event_text = "\n".join(event.description for event in events_on_day)
-
-            # Create a button for each day
-            button = tk.Button(
-                self.calendar_frame,
-                text=str(day),
-                command=lambda d=date: self.show_events_for_date(d),
-                width=4,
-                relief="solid",
-            )
-            button.grid(row=row + 1, column=col)
-            button.bind("<Button-3>", lambda event, b=button, d=date: self.show_event_toolbox_popup(d, b))
-            self.calendar_buttons.append(button)
-
-            col += 1
-            if col > 6:
-                col = 0
-                row += 1
-
-    def prev_month(self):
-        self.selected_date = self.selected_date - timedelta(days=1)
-        self.draw_calendar()
-        self.update_sidebar()
-
-    def next_month(self):
-        self.selected_date = (self.selected_date + timedelta(days=32)).replace(day=1)
-        self.draw_calendar()
-        self.update_sidebar()
-
-    def show_events_for_date(self, date):
-        self.selected_date = date 
-        self.update_sidebar()
-
-        events_on_day = self.events.get(date, [])
-        if events_on_day:
-            event_text = "\n".join(event.description for event in events_on_day)
-            messagebox.showinfo(f"Events on {date.strftime('%Y-%m-%d')}", event_text)
-        else:
-            messagebox.showinfo(f"Events on {date.strftime('%Y-%m-%d')}", "No events scheduled for this day.")
-
-    def repeat_event(self, event, date):
-        if event.repeat_interval == "Daily":
-            next_date = date + timedelta(days=1)
-        elif event.repeat_interval == "Monthly":
-            # Handle month rollover correctly
-            next_month = date.month + 1
-            next_year = date.year
-            if next_month > 12:
-                next_month = 1
-                next_year += 1
-            next_date = date.replace(month=next_month, year=next_year, day=min(date.day, (date + timedelta(days=32)).replace(day=1).day - 1))
-        elif event.repeat_interval == "Yearly":
-            next_date = date.replace(year=date.year + 1)
-        else:
-            return  # No repetition needed
-
-        if next_date <= self.selected_date.replace(day=1) + timedelta(days=31):  # Check if still in current month
-            self.events.setdefault(next_date, []).append(event)
-            self.repeat_event(event, next_date)
-            self.save_event_to_db(next_date, event)
-
-    def add_event(self, date):
-        event_description = simpledialog.askstring("Event Description", "Enter event description:")
-        if event_description:
-            repeat_interval = simpledialog.askstring("Repeat Interval", "Enter repeat interval (daily, monthly, yearly, or none):") or "None"
-
-            new_event = Event(event_description, repeat_interval.lower())
-            self.events.setdefault(date, []).append(new_event)
-            self.repeat_event(new_event, date)  # Handle repetition
-            self.draw_calendar()
+            self.save_event_to_db(py_date, event)
             self.update_sidebar()
-            self.save_event_to_db(date, new_event)
+            self.highlight_dates_with_events()
 
-    def show_event_toolbox_popup(self, date, button):
-        self.selected_date = date  # Update selected date
-        self.event_toolbox_popup.deiconify()  # the popup
-        self.event_toolbox_popup.geometry(f"+{self.root.winfo_rootx() + self.calendar_frame.winfo_x() + button.winfo_x()}+{self.root.winfo_rooty() + self.calendar_frame.winfo_y() + button.winfo_y()}")  # Position it near the button
+    def delete_event(self):
+        """Deletes the selected event from the list."""
+        selected_items = self.event_list_widget.selectedItems()
+        if not selected_items:
+            QMessageBox.warning(self, "No Selection", "Please select an event from the list to delete.")
+            return
 
-    def edit_events(self, date):
-        # Implement editing events for a specific date
-        if date in self.events:
-            event_list = self.events[date]
-            for i, event in enumerate(event_list):
-                event_description, repeat_interval = event
-                new_description = simpledialog.askstring("Edit Event", f"Current description: {event_description}\nNew description:")
-                if new_description:
-                    event_list[i] = (new_description, repeat_interval)
-            self.draw_calendar()
+        selected_item = selected_items[0]
+        event_text = selected_item.text()
+        date_str = event_text.split(" - ")[0]
+        description = event_text.split(" - ")[1]
+        py_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+
+        reply = QMessageBox.question(self, 'Delete Event', f'Are you sure you want to delete this event?\n\n"{description}"',
+                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                     QMessageBox.StandardButton.No)
+
+        if reply == QMessageBox.StandardButton.Yes:
+            # Remove from local dictionary
+            self.events[py_date] = [e for e in self.events[py_date] if e.description != description]
+            if not self.events[py_date]:
+                del self.events[py_date]
+
+            # Remove from database
+            self.delete_event_from_db(py_date, description)
+
+            # Update UI
             self.update_sidebar()
-            self.save_events_to_db(date, event_list)
-        else:
-            messagebox.showinfo("No Events", "There are no events on this date.")
+            self.highlight_dates_with_events()
 
-    def delete_events(self, date):
-        # Implement deleting events for a specific date
-        if date in self.events:
-            event_list = self.events[date]
-            if len(event_list) > 1:
-                event_to_delete = simpledialog.askstring("Delete Event", "Enter the event description to delete:")
-                if event_to_delete:
-                    for i, event in enumerate(event_list):
-                        if event[0] == event_to_delete:
-                            del event_list[i]
-                            break
-                    self.draw_calendar()
-                    self.update_sidebar()
-                    self.save_events_to_db(date, event_list)
-            else:
-                delete_choice = messagebox.askyesno("Delete Event", "Are you sure you want to delete all events on this date?")
-                if delete_choice:
-                    del self.events[date]
-                    self.draw_calendar()
-                    self.update_sidebar()
-                    self.delete_events_from_db(date)
-        else:
-            messagebox.showinfo("No Events", "There are no events on this date.")
+    def edit_event_from_list(self, item):
+        """Edits an event when it's double-clicked in the list."""
+        event_text = item.text()
+        date_str, old_description = event_text.split(" - ")
+        py_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+
+        new_description, ok = QInputDialog.getText(self, 'Edit Event', 'Enter the new description:', text=old_description)
+
+        if ok and new_description and new_description != old_description:
+            # Update local dictionary
+            for event in self.events[py_date]:
+                if event.description == old_description:
+                    event.description = new_description
+                    break
+
+            # Update database by deleting old and inserting new
+            self.delete_event_from_db(py_date, old_description)
+            self.save_event_to_db(py_date, Event(new_description))
+
+            # Update UI
+            self.update_sidebar()
+
+    # --- UI Update Methods ---
+
+    def highlight_dates_with_events(self):
+        """Applies a bold format to dates in the calendar that have events."""
+        fmt = QTextCharFormat()
+        fmt.setFontWeight(QFont.Weight.Bold)
+
+        for date, event_list in self.events.items():
+            if event_list:
+                qdate = QDate(date.year, date.month, date.day)
+                self.calendar.setDateTextFormat(qdate, fmt)
+
+        # Reset format for dates with no events
+        # A more optimized way would be to track removed events
+        # For simplicity, we can just clear formats and re-apply
+        all_dates_in_view = [self.calendar.dateTextFormat(QDate(self.calendar.yearShown(), self.calendar.monthShown(), day)) for day in range(1, 32)]
+
+        clean_format = QTextCharFormat() # Default format
+        for day in range(1, 32):
+            try:
+                qdate = QDate(self.calendar.yearShown(), self.calendar.monthShown(), day)
+                if qdate.toPyDate() not in self.events:
+                    self.calendar.setDateTextFormat(qdate, clean_format)
+            except ValueError:
+                continue # Handles non-existent dates like Feb 30
 
     def update_sidebar(self):
-        self.sidebar_events_list.delete(0, tk.END)  # Clear existing events
-
-        # Get upcoming events
+        """Updates the sidebar to show all upcoming events."""
+        self.event_list_widget.clear()
+        today = datetime.now().date()
         upcoming_events = []
-        for date, events in sorted(self.events.items()):
-            if date >= self.selected_date:
-                for event in events:
-                    upcoming_events.append(f"{date.strftime('%Y-%m-%d')} - {event.description}")
+        for date, events_list in sorted(self.events.items()):
+            if date >= today:
+                for event in events_list:
+                    upcoming_events.append((date, event.description))
 
-        for event in upcoming_events:
-            self.sidebar_events_list.insert(tk.END, event)
+        for date, description in upcoming_events:
+            item = QListWidgetItem(f"{date.strftime('%Y-%m-%d')} - {description}")
+            self.event_list_widget.addItem(item)
 
-    def sidebar_event_selected(self, event):
-        selection = self.sidebar_events_list.curselection()
-        if selection:
-            selected_event = self.sidebar_events_list.get(selection[0])
-            date_str, description = selected_event.split(" - ")
-            selected_date = datetime.strptime(date_str, "%Y-%m-%d").date()
-            self.show_events_for_date(selected_date)
+    def update_sidebar_for_date(self, qdate):
+        """Updates the sidebar to show events for a specific date."""
+        self.event_list_widget.clear()
+        py_date = qdate.toPyDate()
 
-    def save_event_to_db(self, date, event):
-        try:
-            conn = mariadb.connect(
-                user="your_username",
-                password="your_password",
-                host="your_host",
-                database="your_database",
-            )
-            cursor = conn.cursor()
-            cursor.execute(
-                "INSERT INTO events (event_date, description, repeat_interval) VALUES (?, ?, ?)",
-                (date.strftime("%Y-%m-%d"), event.description, event.repeat_interval),
-            )
-            conn.commit()
-            cursor.close()
-            conn.close()
-        except mariadb.Error as e:
-            print(f"Error connecting to MariaDB: {e}")
+        if py_date in self.events:
+            for event in self.events[py_date]:
+                item = QListWidgetItem(f"{py_date.strftime('%Y-%m-%d')} - {event.description}")
+                self.event_list_widget.addItem(item)
+        else:
+             self.event_list_widget.addItem("No events for this date.")
 
-    def save_events_to_db(self, date, event_list):
-        try:
-            conn = mariadb.connect(
-                user="your_username",
-                password="your_password",
-                host="your_host",
-                database="your_database",
+    # --- Database Methods (mostly unchanged) ---
+    def init_db(self):
+        conn = sqlite3.connect(self.db_file)
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS events (
+                id INTEGER PRIMARY KEY,
+                event_date TEXT NOT NULL,
+                description TEXT NOT NULL,
+                repeat_interval TEXT
             )
-            cursor = conn.cursor()
-            cursor.execute(
-                "DELETE FROM events WHERE event_date = ?",
-                (date.strftime("%Y-%m-%d"),)
-            )
-            for event in event_list:
-                cursor.execute(
-                    "INSERT INTO events (event_date, description, repeat_interval) VALUES (?, ?, ?)",
-                    (date.strftime("%Y-%m-%d"), event.description, event.repeat_interval),
-                )
-            conn.commit()
-            cursor.close()
-            conn.close()
-        except mariadb.Error as e:
-            print(f"Error connecting to MariaDB: {e}")
-
-    def delete_events_from_db(self, date):
-        try:
-            conn = mariadb.connect(
-                user="your_username",
-                password="your_password",
-                host="your_host",
-                database="your_database",
-            )
-            cursor = conn.cursor()
-            cursor.execute(
-                "DELETE FROM events WHERE event_date = ?",
-                (date.strftime("%Y-%m-%d"),)
-            )
-            conn.commit()
-            cursor.close()
-            conn.close()
-        except mariadb.Error as e:
-            print(f"Error connecting to MariaDB: {e}")
+        ''')
+        conn.commit()
+        conn.close()
 
     def load_events_from_db(self):
         events = {}
+        if not os.path.exists(self.db_file): return events
         try:
-            conn = mariadb.connect(
-                user="your_username",
-                password="your_password",
-                host="your_host",
-                database="your_database",
-            )
+            conn = sqlite3.connect(self.db_file)
             cursor = conn.cursor()
             cursor.execute("SELECT event_date, description, repeat_interval FROM events")
-            for row in cursor:
+            for row in cursor.fetchall():
                 event_date = datetime.strptime(row[0], "%Y-%m-%d").date()
                 event = Event(row[1], row[2])
-                events.setdefault(event_date, []).append(event)
-            cursor.close()
+                if event_date not in events:
+                    events[event_date] = []
+                events[event_date].append(event)
             conn.close()
-        except mariadb.Error as e:
-            print(f"Error connecting to MariaDB: {e}")
+        except sqlite3.Error as e:
+            QMessageBox.critical(self, "Database Error", f"Error loading events: {e}")
         return events
 
-    def run(self):
-        self.root.mainloop()
+    def save_event_to_db(self, date, event):
+        try:
+            conn = sqlite3.connect(self.db_file)
+            cursor = conn.cursor()
+            cursor.execute("INSERT INTO events (event_date, description, repeat_interval) VALUES (?, ?, ?)",
+                           (date.strftime("%Y-%m-%d"), event.description, event.repeat_interval))
+            conn.commit()
+            conn.close()
+        except sqlite3.Error as e:
+            QMessageBox.critical(self, "Database Error", f"Error saving event: {e}")
+
+    def delete_event_from_db(self, date, description):
+        try:
+            conn = sqlite3.connect(self.db_file)
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM events WHERE event_date = ? AND description = ?",
+                           (date.strftime("%Y-%m-%d"), description))
+            conn.commit()
+            conn.close()
+        except sqlite3.Error as e:
+            QMessageBox.critical(self, "Database Error", f"Error deleting event: {e}")
+
 
 if __name__ == '__main__':
-    root = tk.Tk()
-    app = CalendarApp(root)
-    app.run()
+    app = QApplication(sys.argv)
+    main_win = CalendarApp()
+    main_win.show()
+    sys.exit(app.exec())
